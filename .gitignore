@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+MAGFiLO_1.0_Kaggle_2026/
+*.zip
+runs/
+submissions/*
+!submissions/sub_v3_ep24_tta.csv
+*.log
+.ipynb_checkpoints/
+reports/overleaf_upload.zip

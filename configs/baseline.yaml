@@ -1,0 +1,59 @@
+# Baseline: class-agnostic Mask R-CNN (ResNet50-FPN, COCO-pretrained).
+# Trained on full-resolution 1024px crops, inferred on full 2048px images.
+name: maskrcnn_r50_baseline
+seed: 42
+
+data:
+  root: MAGFiLO_1.0_Kaggle_2026
+  train_json: train/MAGFiLO_1.0_Annotations_kaggle2026_train.json
+  train_images: train/train_images
+  test_images: test/test_images
+  split_file: splits/split_seed42.json   # created once, reused by every experiment
+  val_frac: 0.15
+
+model:
+  arch: maskrcnn_resnet50_fpn
+  pretrained: true
+  trainable_backbone_layers: 3
+  train_size: 1024          # = crop size, so no resizing during training
+  infer_size: 2048          # full native resolution at inference
+  box_detections_per_img: 60
+  infer_score_thresh: 0.3   # = lowest tuned score_thr (identical results); fewer pasted 2048^2 masks -> less GPU memory
+  tta: []                   # flip TTA views at inference, e.g. [none, hflip, vflip] (see src/tta.py)
+
+train:
+  crop_size: 1024
+  p_focus_crop: 0.8         # prob. of centring the crop on a random filament
+  min_instance_area: 16     # drop instances cut down to fewer pixels by cropping
+  epochs: 24
+  batch_size: 1
+  accum_steps: 4            # effective batch 4
+  lr: 0.005
+  momentum: 0.9
+  weight_decay: 0.0001
+  warmup_steps: 150         # optimizer steps
+  grad_clip: 10.0
+  amp: false               # fp16 on GTX 1650: NaN mask loss and 5x slower; fp32 uses ~1.4 GB
+  num_workers: 2            # 4 workers + VS Code/Chrome pushed the laptop into low-memory
+  eval_every: 4
+  log_every: 50
+
+aug:
+  hflip: 0.5
+  vflip: 0.5
+  rot90: true
+  brightness: 0.15
+  contrast: 0.15
+  gamma: 0.2
+
+postprocess:                # defaults; overwritten by values tuned on validation
+  score_thr: 0.5
+  mask_thr: 0.5
+  min_area: 30
+  overlap_keep: 0.5         # drop an instance if < this fraction survives overlap removal
+
+tune:
+  score_thr: [0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9]
+  mask_thr: [0.3, 0.4, 0.5, 0.6]
+  min_area: [0, 50, 150]
+  overlap_keep: [0.5]
