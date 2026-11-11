@@ -121,6 +121,8 @@ filament-seg/
   (or the user runs it in their own terminal). Resume command:
   `.venv\Scripts\python -m src.train --config configs/baseline.yaml --resume runs/maskrcnn_r50_baseline_20261109_193620`
 - Submissions: v1_ep4 LB 0.33 (val 0.375); v2_ep24 LB 0.36 (val 0.414); v3_ep24_tta LB 0.37 (val 0.419). Final picks: v3 + v2. Log in results/submissions_log.csv. Never tune on LB.
+- Public repo: https://github.com/Saggy7276/filament-seg-2026 (GitHub user Saggy7276; gh CLI installed at
+  'C:\Program Files\GitHub CLI\gh.exe', logged in). Push with `git push` from the project dir.
 - Last completed step: notebooks/pipeline.ipynb executed end to end (configs/baseline_tta.yaml + weights/maskrcnn_r50_filament_tta.pp.json);
   reproduces sub_v3_ep24_tta.csv exactly (val PQ 0.4193). README.md written. Remaining: public repo, report, Google form.
 - GPU contention: VALORANT running uses ~4.7 GB GPU memory and makes training ~3x slower.

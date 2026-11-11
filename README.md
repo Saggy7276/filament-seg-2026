@@ -18,7 +18,7 @@ score-ordered overlap removal with thresholds tuned on a held-out validation spl
 ## Quick start (reproduce the submission without retraining)
 
 ```bash
-git clone <this repo> && cd <repo>
+git clone https://github.com/Saggy7276/filament-seg-2026.git && cd filament-seg-2026
 python -m venv .venv && .venv/Scripts/activate        # Linux/macOS: source .venv/bin/activate
 pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu126
 # put the competition data in MAGFiLO_1.0_Kaggle_2026/ (train/ and test/ as distributed)
