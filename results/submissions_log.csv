@@ -1,0 +1,4 @@
+date,file,weights,val_pq_tuned,public_lb,notes
+2026-11-10,submissions/sub_v1_ep4.csv,runs/maskrcnn_r50_baseline_20261109_193620/best.pt (epoch 4),0.3753,0.33,first baseline; pp score0.8 mask0.4 minarea50
+2026-11-10,submissions/sub_v2_ep24.csv,weights/maskrcnn_r50_filament.pt (run 20261109_193620 epoch 24),0.4137,0.36,pp score0.85 mask0.5 minarea0
+2026-11-10,submissions/sub_v3_ep24_tta.csv,weights/maskrcnn_r50_filament.pt + flip TTA (configs/baseline_tta.yaml),0.4193,0.37,pp score0.8 mask0.5 minarea0; 4.1 s/img

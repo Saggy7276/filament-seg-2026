@@ -1,0 +1,6 @@
+{
+ "score_thr": 0.85,
+ "mask_thr": 0.5,
+ "min_area": 0,
+ "overlap_keep": 0.5
+}

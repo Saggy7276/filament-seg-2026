@@ -1,0 +1,15 @@
+# Python 3.12. Install CUDA PyTorch with:
+#   pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu126
+torch==2.14.1+cu126
+torchvision==0.29.1+cu126
+torchmetrics==1.9.0
+pycocotools==2.0.11
+opencv-python-headless==5.0.0.93
+numpy==2.5.4
+pandas==3.1.1
+PyYAML==6.0.3
+scipy==1.18.1
+scikit-image==0.26.0
+matplotlib==3.11.2
+tqdm==4.70.1
+jupyter==1.1.1
