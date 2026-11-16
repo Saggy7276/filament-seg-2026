@@ -23,6 +23,7 @@ from .data import get_split, gt_rles, load_samples, read_gray, to_model_input
 from .metrics import aggregate, fmt, image_metrics
 from .models import build_model, load_weights, set_mode
 from .postprocess import IMG_SIZE, instances_to_rles, postprocess, postprocess_scored
+from .refiner import load_refiner, refine_instances
 from .tta import flip_image, fuse, unflip_dets
 from .utils import Logger, get_device, load_config, resolve, seed_everything
 
@@ -83,6 +84,27 @@ def run_inference(models, image_paths: list[Path], mcfg: dict, device, amp: bool
     return res
 
 
+# --------------------------------------------------------------------------- final instances
+def make_finalizer(pp: dict, image_paths=None, refiner=None, rcfg=None, fcfg=None, device=None):
+    """Return f(timestamp, detections) -> final instance RLEs.
+
+    Stage 1 is always the score-ordered painting of src/postprocess.py. With a refiner
+    (stage 2, src/refiner.py) every painted instance is re-segmented on a native-resolution
+    crop and refined masks that touch are merged.
+    """
+    paths = {Path(p).stem: p for p in (image_paths or [])}
+    fcfg = fcfg or {}
+
+    def finalize(ts: str, dets: list[dict]) -> list[dict]:
+        insts = postprocess(dets, **{k: pp[k] for k in PP_KEYS})
+        if refiner is None:
+            return instances_to_rles(insts)
+        return refine_instances(refiner, rcfg, read_gray(paths[ts]), insts, device, thr=fcfg.get("thr", 0.4),
+                                tta=fcfg.get("tta", ["none"]), min_area=fcfg.get("min_area", 0))
+
+    return finalize
+
+
 # --------------------------------------------------------------------------- validation
 class ValSet:
     """Validation samples grouped by timestamp, with cached GT RLEs."""
@@ -97,19 +119,19 @@ class ValSet:
         img_dir = root / cfg["data"]["train_images"]
         self.paths = sorted({img_dir / s["file_name"] for s in self.samples})
 
-    def predictions(self, dets_by_ts: dict, pp: dict) -> dict[str, list[dict]]:
-        """Post-processed prediction RLEs per timestamp."""
-        return {ts: instances_to_rles(postprocess(d, **{k: pp[k] for k in PP_KEYS}))
-                for ts, d in dets_by_ts.items()}
+    def predictions(self, dets_by_ts: dict, pp: dict, finalize=None) -> dict[str, list[dict]]:
+        """Final prediction RLEs per timestamp (finalize: see make_finalizer; default = painting only)."""
+        finalize = finalize or make_finalizer(pp)
+        return {ts: finalize(ts, d) for ts, d in dets_by_ts.items()}
 
-    def per_image(self, dets_by_ts: dict, pp: dict) -> list[dict]:
+    def per_image(self, dets_by_ts: dict, pp: dict, finalize=None) -> list[dict]:
         """Metrics per validation sample (one per annotator of each image)."""
-        preds = self.predictions(dets_by_ts, pp)
+        preds = self.predictions(dets_by_ts, pp, finalize)
         return [{"sample_id": s["sample_id"], **image_metrics(preds[s["timestamp"]], self.gt[s["sample_id"]])}
                 for s in self.samples]
 
-    def score(self, dets_by_ts: dict, pp: dict) -> dict:
-        return aggregate(self.per_image(dets_by_ts, pp))
+    def score(self, dets_by_ts: dict, pp: dict, finalize=None) -> dict:
+        return aggregate(self.per_image(dets_by_ts, pp, finalize))
 
 
 def tune_postprocess(valset: ValSet, dets_by_ts: dict, grid: dict, log=print) -> tuple[dict, pd.DataFrame]:
@@ -141,11 +163,11 @@ def rle_counts(rle: dict) -> str:
     return c.decode("ascii") if isinstance(c, bytes) else c
 
 
-def write_submission(dets_by_ts: dict, pp: dict, out_csv: Path) -> pd.DataFrame:
+def write_submission(dets_by_ts: dict, pp: dict, out_csv: Path, finalize=None) -> pd.DataFrame:
+    finalize = finalize or make_finalizer(pp)
     rows = []
     for ts in sorted(dets_by_ts):
-        insts = postprocess(dets_by_ts[ts], **{k: pp[k] for k in PP_KEYS})
-        for k, rle in enumerate(instances_to_rles(insts), start=1):
+        for k, rle in enumerate(finalize(ts, dets_by_ts[ts]), start=1):
             rows.append({"filament_id": f"{ts}_{k}", "segmentation_rle": rle_counts(rle)})
     df = pd.DataFrame(rows, columns=["filament_id", "segmentation_rle"])
     out_csv.parent.mkdir(parents=True, exist_ok=True)
@@ -200,6 +222,7 @@ def main():
     ap.add_argument("--config", default="configs/baseline.yaml")
     ap.add_argument("--weights", required=True, nargs="+", help="one or more .pt files (ensemble)")
     ap.add_argument("--pp", default=None, help="json file with tuned post-process params")
+    ap.add_argument("--refiner", default=None, help="stage-2 crop refiner weights (uses cfg['refine'])")
     ap.add_argument("--tune", action="store_true", help="tune post-processing on validation")
     ap.add_argument("--submit", action="store_true", help="predict test set and write CSV")
     ap.add_argument("--out", default="submissions/submission.csv")
@@ -220,6 +243,8 @@ def main():
     pp = dict(cfg["postprocess"])
     if args.pp:
         pp.update(json.loads(Path(resolve(args.pp)).read_text()))
+    refiner, rcfg = load_refiner(args.refiner, device) if args.refiner else (None, None)
+    fcfg = dict(cfg.get("refine") or {})
 
     if args.tune:
         vs = ValSet(cfg)
@@ -227,6 +252,8 @@ def main():
         log("val (default pp):", fmt(vs.score(dets, pp)))
         pp, df = tune_postprocess(vs, dets, cfg["tune"], log)
         log("val (tuned pp):  ", fmt(vs.score(dets, pp)))
+        if refiner is not None:
+            log("val (tuned pp + refiner):", fmt(vs.score(dets, pp, make_finalizer(pp, vs.paths, refiner, rcfg, fcfg, device))))
         out = resolve(args.weights[0]).with_suffix(".ens.pp.json" if len(args.weights) > 1 else ".pp.json")
         out.write_text(json.dumps(pp, indent=1))
         log("saved", out)
@@ -238,8 +265,8 @@ def main():
         dets = run_inference(model, paths, cfg["model"], device, amp, desc="test")
         log(f"test inference: {len(paths)} images in {time.time() - t0:.0f}s")
         out_csv = resolve(args.out)
-        write_submission(dets, pp, out_csv)
-        log("wrote", out_csv, "with pp", pp)
+        write_submission(dets, pp, out_csv, make_finalizer(pp, paths, refiner, rcfg, fcfg, device))
+        log("wrote", out_csv, "with pp", pp, "| refiner", args.refiner, fcfg if refiner is not None else "")
         validate_submission(out_csv, test_dir, log)
 
 

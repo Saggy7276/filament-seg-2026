@@ -78,6 +78,12 @@ def main():
     samples = load_samples(root / cfg["data"]["train_json"])
     split = get_split(samples, resolve(cfg["data"]["split_file"]), cfg["data"]["val_frac"], seed)
     train_s = [s for s in samples if s["timestamp"] in set(split["train"])]
+    if cfg["data"].get("train_on_all"):
+        # final-model mode: train on train + val. Validation numbers logged below are then measured
+        # on training data and are NOT a valid estimate; use last.pt with the post-processing
+        # parameters tuned for the split-trained model.
+        train_s = list(samples)
+        log("train_on_all: validation images added to training; val metrics are not valid, use last.pt")
     valset = ValSet(cfg)
     log(f"train samples {len(train_s)} ({len(split['train'])} imgs) | val samples {len(valset.samples)} ({len(split['val'])} imgs)")
 
@@ -88,6 +94,10 @@ def main():
                     pin_memory=True, drop_last=True)
 
     device = get_device()
+    if device.type == "cuda" and tc.get("gpu_mem_fraction"):
+        # Cap the allocator so cached blocks are reused instead of spilling into Windows shared GPU
+        # memory (which is ~4x slower than dedicated memory on a 4 GB card).
+        torch.cuda.set_per_process_memory_fraction(float(tc["gpu_mem_fraction"]))
     model = build_model(mc).to(device)
     params = [p for p in model.parameters() if p.requires_grad]
     opt = torch.optim.SGD(params, lr=tc["lr"], momentum=tc["momentum"], weight_decay=tc["weight_decay"])
@@ -120,7 +130,8 @@ def main():
             tgts = [{k: v.to(device, non_blocking=True) for k, v in t.items()} for t in tgts]
             with torch.autocast(device_type="cuda", enabled=use_amp):
                 losses = model(imgs, tgts)
-            loss = sum(losses.values())
+            lw = tc.get("loss_weights") or {}  # e.g. {loss_classifier: 3.0}; default 1 for every term
+            loss = sum(v * lw.get(k, 1.0) for k, v in losses.items())
             if not torch.isfinite(loss):
                 log("non-finite loss, skipping batch", {k: float(v) for k, v in losses.items()})
                 opt.zero_grad(set_to_none=True)
@@ -139,7 +150,8 @@ def main():
             n += 1
             if (i + 1) % tc["log_every"] == 0:
                 log(f"ep {epoch} it {i + 1}/{iters_per_epoch} loss {sum(run_loss.values()) / n:.4f} "
-                    f"lr {opt.param_groups[0]['lr']:.2e} mem {torch.cuda.max_memory_allocated() / 2**30:.2f}G")
+                    f"lr {opt.param_groups[0]['lr']:.2e} mem {torch.cuda.max_memory_allocated() / 2**30:.2f}G "
+                    f"rsv {torch.cuda.memory_reserved() / 2**30:.2f}G")
         log(f"epoch {epoch} done in {time.time() - t0:.0f}s | " +
             " ".join(f"{k[5:]} {v / max(n, 1):.4f}" for k, v in run_loss.items()))
         save_weights(model, run_dir / "last.pt")

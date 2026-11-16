@@ -50,6 +50,27 @@ def postprocess_scored(dets, score_thr, mask_thr, min_area, overlap_keep, size: 
     return out
 
 
+def merge_touching(rles: list[dict]) -> list[dict]:
+    """Union of every group of masks connected by positive overlap (one instance per group)."""
+    if len(rles) < 2:
+        return list(rles)
+    adj = np.asarray(mask_utils.iou(rles, rles, [0] * len(rles))) > 0
+    seen, out = set(), []
+    for s in range(len(rles)):
+        if s in seen:
+            continue
+        stack, grp = [s], []
+        while stack:
+            i = stack.pop()
+            if i in seen:
+                continue
+            seen.add(i)
+            grp.append(i)
+            stack.extend(np.flatnonzero(adj[i]).tolist())
+        out.append(mask_utils.merge([rles[i] for i in grp]))
+    return out
+
+
 def instances_to_rles(insts, size: int = IMG_SIZE) -> list[dict]:
     rles = []
     for x0, y0, m, *_ in insts:

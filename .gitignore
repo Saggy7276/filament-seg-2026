@@ -6,6 +6,8 @@ MAGFiLO_1.0_Kaggle_2026/
 runs/
 submissions/*
 !submissions/sub_v3_ep24_tta.csv
+!submissions/sub_v4_ep24_tta_refined.csv
+!submissions/sub_v5_full.csv
 *.log
 .ipynb_checkpoints/
 reports/overleaf_upload.zip

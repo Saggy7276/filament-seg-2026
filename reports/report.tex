@@ -11,7 +11,7 @@
 
 \begin{document}
 
-\title{Class-Agnostic Mask R-CNN at Native Resolution for\\Solar Filament Instance Segmentation}
+\title{Mask R-CNN with a Native-Resolution Crop Refiner for\\Solar Filament Instance Segmentation}
 
 % TODO: confirm name, affiliation, e-mail and Kaggle team name
 \author{\IEEEauthorblockN{Sagar Mahadik}
@@ -27,10 +27,11 @@ Solar Filament Segmentation Challenge 2026. Our pipeline fine-tunes a COCO-pretr
 (ResNet50-FPN) with a single \emph{filament} class on full-resolution $1024\times1024$ crops, runs
 it on the native $2048\times2048$ image, fuses horizontal/vertical-flip test-time augmentation at
 the instance level, and resolves overlaps by score-ordered painting with thresholds tuned on a
-held-out, image-grouped validation split. The final model reaches a validation Panoptic Quality
-(PQ) of 0.419 (Dice 0.662), above the 0.34 PQ measured between independent annotators of the same
-images, and 0.37 PQ on the public leaderboard. Training takes about
-3.7\,h and inference 2.2\,s per image on a 4\,GB consumer GPU (GTX 1650). Code, weights and an
+held-out, image-grouped validation split. A small U-Net then re-segments every detected filament
+on a native-resolution crop. The final pipeline reaches a validation Panoptic Quality
+(PQ) of 0.447 (Dice 0.677), above the 0.34 PQ measured between independent annotators of the same
+images, and 0.38 PQ on the public leaderboard. Training takes about
+5\,h and inference 2.4\,s per image on a 4\,GB consumer GPU (GTX 1650). Code, weights and an
 end-to-end notebook are public.
 \end{abstract}
 
@@ -46,8 +47,8 @@ both accurate masks and correct instance separation: splitting one filament into
 merging neighbours is penalised twice (an FN and one or more FPs). This favours methods that
 predict instances directly over semantic segmentation followed by connected components, which tend
 to fragment thin filaments. We chose a two-stage instance segmenter and invested in the parts that
-matter for PQ at this data scale: native resolution, an honest validation protocol, and
-instance-level post-processing.
+matter for PQ at this data scale: native resolution, an honest validation protocol,
+instance-level post-processing, and a second stage that redraws each mask at full resolution.
 
 \section{Data}
 The training set (MAGFiLO~\cite{magfilo}) contains 707 unique $2048\times2048$ 8-bit grayscale
@@ -115,7 +116,21 @@ threshold $\tau_s$, mask threshold $\tau_m$ and $A_{\min}$ are grid-searched on 
 ($\tau_s\in[0.3,0.9]$, $\tau_m\in\{0.3,\dots,0.6\}$, $A_{\min}\in\{0,50,150\}$). A high score
 threshold is selected ($\tau_s=0.8$ with TTA, 0.85 without; $\tau_m=0.5$; $A_{\min}=0$): under PQ a
 false positive costs as much as half a missed filament, so keeping only confident detections pays
-off given the label noise. Masks are encoded as COCO RLE with pycocotools for the submission.
+off given the label noise.
+
+\subsection{Crop refiner}
+Mask R-CNN predicts each mask on a $28\times28$ grid inside its box, which is coarse for thin
+filaments. Following public two-stage notebooks for this challenge~\cite{refinernb}, each painted
+instance is re-segmented by a U-Net~\cite{ronneberger2015unet} with an ImageNet-pretrained ResNet18
+encoder. The input is a square native-resolution crop centred on the instance (side $1.8\times$ the
+larger box side, at least 96\,px) resized to $256\times256$, so the median filament is seen
+upsampled rather than pooled; the output is averaged over four flip views and binarised at 0.4.
+Refined masks that touch are merged into one filament, and an instance keeps its detector mask if
+the refiner returns nothing. The refiner is trained on the training split only, on one crop per
+GT filament (6.9k crops) whose target is that filament alone, with random context ($1.4$--$2.3$)
+and centre shift ($\pm15\%$ of the extent) to imitate imperfect detector boxes, flips, rotations
+and photometric jitter; BCE plus Dice loss, AdamW (lr $10^{-3}$, one-cycle), batch 16, 24 epochs
+(1.2\,h). The code and weights are our own. Masks are encoded as COCO RLE with pycocotools.
 
 \section{Results}
 Table~\ref{tab:main} summarises the validation metrics. Dice is the foreground Dice per sample,
@@ -123,10 +138,10 @@ computed with \texttt{torchmetrics.segmentation.DiceScore} and averaged (identic
 implementation). \emph{1:N} counts GT filaments covered by at least two predictions each lying more
 than 50\% inside it (fragmentation); \emph{N:1} counts predictions covering at least two GT filaments
 each lying more than 50\% inside it (over-merging). We also ran the organisers' self-evaluation
-code unchanged on our validation predictions: it returns the same PQ (0.4193), a mean pairwise IoU
-of 0.568 and mean pairwise Dice of 0.702 over the 988 overlapping (GT, prediction) pairs, and, with
-its any-overlap definition, 56 GT filaments touched by two or more predictions (1:n) and 40
-predictions touching two or more GT filaments (n:1), out of 1138 GT filaments and 1121
+code unchanged on our validation predictions: it returns the same PQ (0.4467), a mean pairwise IoU
+of 0.594 and mean pairwise Dice of 0.725 over the 963 overlapping (GT, prediction) pairs, and, with
+its any-overlap definition, 32 GT filaments touched by two or more predictions (1:n) and 40
+predictions touching two or more GT filaments (n:1), out of 1138 GT filaments and 1095
 predictions.
 
 \begin{table}[t]
@@ -143,7 +158,8 @@ Epoch 4, tuned post-proc. & 0.375 & 0.661 & 0.568 & 0.604 & 45 & 16\\
 Epoch 24, default post-proc. & 0.370 & 0.662 & 0.558 & 0.633 & 69 & 32\\
 Epoch 24, tuned post-proc. & 0.412 & 0.665 & 0.619 & 0.646 & 34 & 26\\
 \quad + hflip TTA & 0.412 & 0.671 & 0.615 & 0.659 & 50 & 25\\
-\quad + hflip + vflip TTA (final) & \textbf{0.419} & \textbf{0.671} & \textbf{0.625} & \textbf{0.662} & 43 & 27\\
+\quad + hflip + vflip TTA & 0.419 & 0.671 & 0.625 & 0.662 & 43 & 27\\
+\quad + crop refiner (final) & \textbf{0.447} & \textbf{0.686} & \textbf{0.651} & \textbf{0.677} & 31 & 34\\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -151,10 +167,18 @@ Epoch 24, tuned post-proc. & 0.412 & 0.665 & 0.619 & 0.646 & 34 & 26\\
 Tuning the post-processing on validation is the largest single gain (+0.042 PQ), mostly through
 recognition quality: false positives fall from 890 to 349. Three-view flip TTA adds a further
 +0.008 PQ with consistent gains in SQ (+0.006) and Dice (+0.016), and recovers 40 additional
-filaments. On the public leaderboard the epoch-4 and epoch-24 single-view models score 0.33 and
-0.36, and the final TTA model 0.37, tracking validation with a stable offset of about $-0.05$. Of the GT filaments,
-62\% are matched by some prediction with IoU$>0.5$; matched IoU has a median of 0.68
-(Fig.~\ref{fig:dist}).
+filaments. The crop refiner adds +0.027 PQ: masks improve (SQ +0.015), 21 near-miss filaments
+cross the IoU 0.5 threshold, and merging touching masks removes 47 false positives and reduces
+fragmentation (1:N 43 to 31) at the cost of a few more merges. The gain is stable for refiner
+thresholds 0.3--0.7 (PQ 0.445--0.447). On the public leaderboard the epoch-4 and epoch-24
+single-view models score 0.33 and 0.36, the TTA model 0.37 and the final pipeline 0.38, tracking
+validation with an offset of about $-0.05$ to $-0.07$. Of the GT filaments, 64\% are matched by
+some prediction with IoU$>0.5$; matched IoU has a median of 0.69 (Fig.~\ref{fig:dist}).
+
+\textbf{What did not help} (validation PQ, all with flip TTA): a Mask R-CNN v2 backbone with
+smaller anchors (0.417 without, 0.441 with the refiner); ensembles of two or three detectors
+(0.414--0.420 without, 0.441--0.446 with the refiner); using refiner/detector agreement to veto or
+rescue detections (0.440); $90^\circ$-rotation TTA (0.415--0.418); and dilating masks (0.392).
 
 \begin{figure}[t]
 \centering
@@ -168,30 +192,31 @@ IoU 0.5 matching threshold) and PQ per validation sample.}
 \centering
 \includegraphics[width=\columnwidth]{val_median.png}\\[2pt]
 \includegraphics[width=\columnwidth]{val_zoom.png}
-\caption{Median validation sample (PQ 0.418). Left: ground truth; right: prediction. Most
-filaments are found, with smoother boundaries than the hand-drawn polygons; the long filament at
-the top is split into two pieces, and small faint features are detected that the annotator did not
-label. Bottom: 768-pixel zoom.}
+\caption{Median validation sample (PQ 0.451). Left: ground truth (13 filaments); right: prediction
+(8). The larger filaments are found with accurate outlines; two neighbouring filaments near the
+disk centre are merged into one, and several small, faint filaments are missed. Bottom:
+768-pixel zoom.}
 \label{fig:qual}
 \end{figure}
 
 \textbf{Qualitative analysis.} Figure~\ref{fig:qual} shows typical behaviour. Compact and
 medium-sized filaments are segmented reliably, with smoother outlines than the annotated polygons,
-which limits SQ to about 0.67. The main error modes are (i) long, thin, curved filaments that are
+which limits SQ to about 0.69 (the refiner alone reaches a mean IoU of 0.70 on GT-centred crops). The main error modes are (i) long, thin, curved filaments that are
 split into several instances or whose faint segments are missed; (ii) small, low-contrast
 filaments that the model detects but the annotator did not label, or the reverse, which is the
 same ambiguity that limits inter-annotator agreement; and (iii) occasional merging of nearby
 filaments.
 
-\textbf{Efficiency.} Training: 24 epochs, about 3.7\,h on a single GTX 1650 (4\,GB), 1.9\,GB peak
-memory. Inference on the 180 test images: 1.0\,s per image single-view and 2.2\,s per image with
-three-view TTA (fp32, 2.07\,GB peak), plus 5\,s in total for post-processing and RLE encoding. The
-model has 44.0\,M parameters and is stored as an 84\,MB fp16 file.
+\textbf{Efficiency.} Training on a single GTX 1650 (4\,GB): detector 24 epochs, about 3.7\,h,
+1.9\,GB peak memory; refiner 24 epochs, 1.2\,h, 2.0\,GB. Inference on the 180 test images: 2.2\,s
+per image for the detector with three-view TTA (fp32, 2.1\,GB peak), plus 39\,s in total
+(0.2\,s per image) for post-processing, the four-view refiner and RLE encoding. The detector has
+44.0\,M parameters (84\,MB fp16 file) and the refiner 14.4\,M (55\,MB).
 
 \section{Reproducibility}
 The public repository contains all code (\texttt{src/}), the configuration
-(\texttt{configs/baseline\_tta.yaml}), the fixed split, the final weights with the tuned
-post-processing parameters, \texttt{requirements.txt} with exact versions (Python 3.12, PyTorch
+(\texttt{configs/refined\_tta.yaml}, \texttt{configs/refiner.yaml}), the fixed split, the detector
+and refiner weights with the tuned post-processing parameters, \texttt{requirements.txt} with exact versions (Python 3.12, PyTorch
 2.14.1, torchvision 0.29.1), and unit tests for the metrics and post-processing. The notebook
 \texttt{notebooks/pipeline.ipynb} runs the full pipeline from the committed weights (data and
 split, model loading, validation metrics and figures, test inference, CSV writing and format
@@ -202,12 +227,12 @@ size limit; BatchNorm running statistics are kept in fp32, because small varianc
 zero in fp16 and, with $\varepsilon=0$, would produce non-finite activations.
 
 \section{Conclusion and future work}
-A class-agnostic Mask R-CNN at native resolution, with careful validation and PQ-aware
-post-processing, slightly exceeds inter-annotator agreement on this dataset while running on a
-4\,GB GPU. The remaining errors are dominated by long, thin filaments and by label ambiguity.
-Promising directions are training against all annotators jointly (e.g. soft or consensus
-targets), higher-resolution mask heads or contour refinement for thin structures, and ensembles
-of models trained with different seeds.
+A class-agnostic Mask R-CNN at native resolution followed by a crop-level U-Net refiner, with
+careful validation and PQ-aware post-processing, exceeds inter-annotator agreement on this dataset
+while running on a 4\,GB GPU. The remaining errors are dominated by small, faint filaments, by
+merged or split neighbours, and by label ambiguity: recognition quality, not mask quality, is now
+the limit. Promising directions are training against all annotators jointly (e.g. soft or
+consensus targets) and a refiner that also scores or rejects detections.
 
 \begin{thebibliography}{9}
 \bibitem{kirillov2019panoptic}
@@ -216,9 +241,15 @@ A.~Kirillov, K.~He, R.~Girshick, C.~Rother, and P.~Doll\'ar, ``Panoptic segmenta
 \bibitem{he2017mask}
 K.~He, G.~Gkioxari, P.~Doll\'ar, and R.~Girshick, ``Mask R-CNN,'' in \emph{Proc. ICCV}, 2017,
 pp. 2961--2969.
+\bibitem{ronneberger2015unet}
+O.~Ronneberger, P.~Fischer, and T.~Brox, ``U-Net: Convolutional networks for biomedical image
+segmentation,'' in \emph{Proc. MICCAI}, 2015, pp. 234--241.
+\bibitem{refinernb}
+Nomannic19, ``Mask R-CNN + U-Net Refiner,'' and Fususu, ``LB 0.70 | Topology-Safe Solar
+Filaments,'' public Kaggle notebooks, Solar Filament Segmentation Challenge 2026.
 \bibitem{magfilo}
-A.~Ahmadzadeh \emph{et al.}, ``MAGFiLO: a large-scale annotated dataset of solar filaments,''
-\emph{Scientific Data}, 2024, doi:10.1038/s41597-024-03876-y. % TODO: verify exact title and authors
+A.~Ahmadzadeh \emph{et al.}, ``A dataset of manually annotated filaments from H-alpha
+observations,'' \emph{Scientific Data}, vol.~11, 2024, doi:10.1038/s41597-024-03876-y.
 \end{thebibliography}
 
 \end{document}

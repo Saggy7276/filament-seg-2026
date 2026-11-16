@@ -25,8 +25,8 @@ Reproduces the full submission from the committed weights **without retraining**
 
 1. Environment and configuration
 2. Data loading and the fixed, timestamp-grouped train/validation split
-3. *(optional)* Training (`RUN_TRAINING = True`; ~3.5 h on a GTX 1650 with the GPU to itself)
-4. Model loading (class-agnostic Mask R-CNN, ResNet50-FPN)
+3. *(optional)* Training (`RUN_TRAINING = True`; ~3.7 h detector + ~1.2 h refiner on a GTX 1650 with the GPU to itself)
+4. Model loading (stage 1: class-agnostic Mask R-CNN, ResNet50-FPN; stage 2: ResNet18 U-Net crop refiner)
 5. Validation: Panoptic Quality, Dice (incl. `torchmetrics.DiceScore`), IoU/Dice distributions, one-to-many / many-to-one counts
 6. Qualitative results: masks overlaid on H-alpha images
 7. Test-set inference, submission CSV (RLE) and format checks
@@ -42,6 +42,15 @@ validation split only. At test time, predictions from the original, horizontally
 vertically flipped image are fused per instance (mean mask probability; score averaged over the
 three views), see `src/tta.py`.
 
+**Stage 2: crop refiner.** Mask R-CNN predicts each mask on a 28x28 grid inside its box, which is coarse for
+thin filaments. Every stage-1 instance is therefore re-segmented by a small U-Net (ResNet18 encoder) on a
+square native-resolution crop centred on it (side = 1.8 x the larger box side, at least 96 px, resized to
+256x256; four flip views averaged). Refined masks that touch are merged into one filament. The refiner is
+trained on the training split only, from the same segmentation polygons (`src/refiner.py`,
+`configs/refiner.yaml`). The two-stage idea follows the public Kaggle notebooks "Mask R-CNN + U-Net Refiner"
+(Nomannic19) and "LB 0.70 | Topology-Safe Solar Filaments" (Fususu); the implementation and all weights
+here are our own.
+
 Run from the repository root or from `notebooks/`; the first cell sets the working directory.
 """)
 
@@ -53,12 +62,13 @@ ROOT = Path.cwd().parent if Path.cwd().name == "notebooks" else Path.cwd()
 os.chdir(ROOT); sys.path.insert(0, str(ROOT))
 
 # ---- user settings ---------------------------------------------------------
-CONFIG       = "configs/baseline_tta.yaml"         # final: epoch-24 model + flip TTA
+CONFIG       = "configs/refined_tta.yaml"          # final: epoch-24 model + flip TTA + crop refiner
 WEIGHTS      = "weights/maskrcnn_r50_filament.pt"        # committed final weights
 PP_FILE      = "weights/maskrcnn_r50_filament_tta.pp.json"  # post-processing tuned on validation (with TTA)
+REFINER      = "weights/refiner_r18_filament.pt"         # stage-2 crop refiner (None = stage 1 only)
 SUBMISSION   = "submissions/submission.csv"
 RUN_TRAINING = False   # True = retrain from COCO weights (hours); False = use committed weights
-RUN_VAL      = True    # validation metrics + figures (~8 min on GTX 1650 with TTA)
+RUN_VAL      = True    # validation metrics + figures (~10 min on GTX 1650 with TTA + refiner)
 # ---------------------------------------------------------------------------
 print("project root:", ROOT)
 """)
@@ -69,9 +79,10 @@ from pycocotools import mask as mask_utils
 from src.utils import load_config, resolve, seed_everything, get_device
 from src.data import load_samples, get_split, read_gray, observatory
 from src.models import build_model, load_weights
-from src.predict import PP_KEYS, ValSet, run_inference, write_submission, validate_submission
+from src.predict import PP_KEYS, ValSet, make_finalizer, run_inference, write_submission, validate_submission
+from src.refiner import load_refiner
 from src.postprocess import postprocess, instances_to_rles
-from src.metrics import aggregate, fmt, torchmetrics_dice
+from src.metrics import aggregate, fmt, image_metrics, torchmetrics_dice
 from src.visualize import show_pair
 
 cfg = load_config(CONFIG)
@@ -114,7 +125,9 @@ if RUN_TRAINING:
     subprocess.run([sys.executable, "-m", "src.train", "--config", CONFIG], check=True)
     run = sorted(glob.glob("runs/*/best.pt"), key=os.path.getmtime)[-1]
     WEIGHTS, PP_FILE = run, run.replace(".pt", ".pp.json")
-    print("using freshly trained", WEIGHTS)
+    subprocess.run([sys.executable, "-m", "src.refiner", "--config", "configs/refiner.yaml"], check=True)
+    REFINER = sorted(glob.glob("runs/refiner_*/best.pt"), key=os.path.getmtime)[-1]
+    print("using freshly trained", WEIGHTS, "and", REFINER)
 """)
 
 md("## 4. Load model")
@@ -127,6 +140,11 @@ pp = {**cfg["postprocess"], **json.loads(Path(PP_FILE).read_text())}
 n_params = sum(p.numel() for p in model.parameters())
 print(f"loaded {WEIGHTS} ({Path(WEIGHTS).stat().st_size / 2**20:.0f} MB, {n_params / 1e6:.1f} M params) in {time.time() - t0:.1f}s")
 print("post-processing:", pp)
+refiner, rcfg = load_refiner(REFINER, device) if REFINER else (None, None)
+fcfg = dict(cfg.get("refine") or {})
+if refiner is not None:
+    print(f"loaded {REFINER} ({Path(REFINER).stat().st_size / 2**20:.0f} MB, "
+          f"{sum(p.numel() for p in refiner.parameters()) / 1e6:.1f} M params); crop settings {rcfg}; refine {fcfg}")
 """)
 
 md("""
@@ -142,10 +160,14 @@ if RUN_VAL:
     t0 = time.time()
     val_dets = run_inference(model, vs.paths, cfg["model"], device, amp=cfg["train"]["amp"], desc="val")
     t_val = time.time() - t0
-    preds = vs.predictions(val_dets, pp)
-    per = vs.per_image(val_dets, pp)
+    print("stage 1 only     :", fmt(vs.score(val_dets, pp)))
+    t0 = time.time()
+    preds = vs.predictions(val_dets, pp, make_finalizer(pp, vs.paths, refiner, rcfg, fcfg, device))
+    t_ref = time.time() - t0
+    per = [{"sample_id": s["sample_id"], **image_metrics(preds[s["timestamp"]], vs.gt[s["sample_id"]])} for s in vs.samples]
     m = aggregate(per)
-    print(fmt(m))
+    print("final (2 stages) :", fmt(m))
+    print(f"post-processing + refiner: {t_ref:.0f}s")
     print(f"inference: {len(vs.paths)} images in {t_val:.0f}s ({t_val / len(vs.paths):.2f} s/img)")
     display(pd.Series(m, name="validation").to_frame().T.round(4))
 """)
@@ -233,14 +255,15 @@ t0 = time.time()
 test_dets = run_inference(model, test_paths, cfg["model"], device, amp=cfg["train"]["amp"], desc="test")
 t_inf = time.time() - t0
 t0 = time.time()
-sub = write_submission(test_dets, pp, resolve(SUBMISSION))
+finalize_test = make_finalizer(pp, test_paths, refiner, rcfg, fcfg, device)
+sub = write_submission(test_dets, pp, resolve(SUBMISSION), finalize_test)
 t_pp = time.time() - t0
 assert validate_submission(resolve(SUBMISSION), test_dir)
 display(sub.head())
 """)
 code(r"""
 for p in test_paths[:2]:
-    rles = instances_to_rles(postprocess(test_dets[p.stem], **{k: pp[k] for k in PP_KEYS}))
+    rles = finalize_test(p.stem, test_dets[p.stem])
     show_pair(read_gray(p), [], rles, title=f"test {p.stem}"); plt.show()
 """)
 
@@ -248,7 +271,7 @@ md("## 8. Computational cost")
 code(r"""
 print("hardware:", torch.cuda.get_device_name(0) if device.type == "cuda" else "CPU")
 print(f"test inference: {len(test_paths)} images, {t_inf:.0f}s total, {t_inf / len(test_paths):.2f} s/img (2048x2048, fp32, 3-view flip TTA)")
-print(f"post-processing + RLE encoding: {t_pp:.1f}s total")
+print(f"post-processing + crop refiner (4-view) + RLE encoding: {t_pp:.1f}s total")
 if device.type == "cuda":
     print(f"peak GPU memory (inference): {torch.cuda.max_memory_allocated() / 2**30:.2f} GB")
 """)

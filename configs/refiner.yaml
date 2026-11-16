@@ -1,0 +1,28 @@
+# Stage-2 crop refiner (src/refiner.py): ResNet18 U-Net that re-segments each detection
+# on a native-resolution square crop. Trained on GT instance masks of the training split only.
+name: refiner_r18
+seed: 42
+
+data:
+  root: MAGFiLO_1.0_Kaggle_2026
+  train_json: train/MAGFiLO_1.0_Annotations_kaggle2026_train.json
+  train_images: train/train_images
+  test_images: test/test_images
+  split_file: splits/split_seed42.json   # same split as the detector
+  val_frac: 0.15
+
+refiner:
+  size: 256                 # network input (square)
+  context: 1.8              # window side = max(box w, h) * context at inference
+  min_side: 96              # smallest native window (px); upsampled to `size`
+  context_jitter: [1.4, 2.3]  # training: random context, imitates loose/tight detector boxes
+  shift_jitter: 0.15        # training: random centre shift, fraction of object extent
+  min_extent: 4             # skip GT instances smaller than this (px)
+  cache_size: 288           # cached wide crop per instance (px)
+  cache_context: 2.6        # must exceed context_jitter max + 2 * shift_jitter
+
+train:
+  epochs: 24
+  batch_size: 16            # GTX 1650: 2.0 GB, 0.43 s/it; batch 32 spills into shared memory (7 s/it)
+  lr: 0.001
+  weight_decay: 0.0001

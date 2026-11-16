@@ -1,4 +1,6 @@
-date,file,weights,val_pq_tuned,public_lb,notes
+﻿date,file,weights,val_pq_tuned,public_lb,notes
 2026-11-10,submissions/sub_v1_ep4.csv,runs/maskrcnn_r50_baseline_20261109_193620/best.pt (epoch 4),0.3753,0.33,first baseline; pp score0.8 mask0.4 minarea50
 2026-11-10,submissions/sub_v2_ep24.csv,weights/maskrcnn_r50_filament.pt (run 20261109_193620 epoch 24),0.4137,0.36,pp score0.85 mask0.5 minarea0
 2026-11-10,submissions/sub_v3_ep24_tta.csv,weights/maskrcnn_r50_filament.pt + flip TTA (configs/baseline_tta.yaml),0.4193,0.37,pp score0.8 mask0.5 minarea0; 4.1 s/img
+2026-11-12,submissions/sub_v4_ep24_tta_refined.csv,weights/maskrcnn_r50_filament.pt + flip TTA + weights/refiner_r18_filament.pt (configs/refined_tta.yaml),0.4467,0.38,pp score0.8 mask0.5 minarea0; refiner thr0.4 flip4 merge-touching; 1208 rows
+2026-11-15,submissions/sub_v5_full.csv,runs/maskrcnn_r50_full_20261114_223544/last.pt + flip TTA + runs/refiner_r18_full_20261115_200448/last.pt (configs/refined_tta.yaml),n/a (trained on train+val),0.39,frozen v4 thresholds: pp score0.8 mask0.5 minarea0; refiner thr0.4 flip4 merge-touching; 1201 rows

@@ -140,6 +140,81 @@ filament-seg/
 - ENSEMBLE RESULT (val, tools/eval_ensemble.py + score-fusion variants): seed42+seed7 x 3 views = 0.4102 (sum/n),
   best variant mean*(k/n)^0.25 = 0.4192 == seed42 alone 0.4193. No gain -> ensemble DROPPED; v3 (seed 42 + flip TTA) stays final.
   seed 7 alone + TTA = 0.4156 (backup only).
+- Post-processing test (val, cached seed-42 3-view): merge-touching masks (union of overlapping detections) at score 0.8
+  gives PQ 0.4234 vs painting 0.4193 (1:N 43->25, N:1 27->42). Small gain; decide together with the v2 model.
+- IMPROVEMENT RUN started 2026-11-11 ~22:30: configs/v2_anchors.yaml = Mask R-CNN R50-FPN **v2** + anchors 16..256
+  (src/models.py ARCHS). Smoke: 2.35 GB train, 0.71 s/it, infer 1.8 s/img. Run dir runs/maskrcnn_r50v2_anchors16_*.
+  After it finishes: tools/eval_tta.py --config configs/v2_anchors.yaml --weights <run>/best.pt --cache runs/tta_val_cache_v2.pkl
+  --combos none none,hflip,vflip ; if val PQ > 0.4193 -> sub_v4, update weights/, notebook, report, repo.
+- v2 run (runs/maskrcnn_r50v2_anchors16_20261111_223951) was KILLED by a Windows Update restart 2026-11-12 ~01:26 during
+  epoch 6; resumed from ckpt.pt (after epoch 5) on 2026-11-12 07:35 via WMI, logs train_v2_stdout.log / train_v2_stderr.log.
+  Val ep 4 default-pp PQ 0.3573 (seed-7 R50 v1 at ep 4: 0.3176). ~0.72 s/it with GPU free -> ~4 h for the 19 remaining epochs.
+  Resume: `.venv\Scripts\python -m src.train --config configs/v2_anchors.yaml --resume runs/maskrcnn_r50v2_anchors16_20261111_223951`
+  Pause Windows Update before long runs.
+- v2 run FINISHED 2026-11-12 16:39: best.pt = epoch 24, default-pp PQ 0.3883, tuned 0.4022 (score 0.8 / mask 0.5 / min_area 0).
+  TTA (cache runs/tta_val_cache_v2.pkl): none 0.4022; none+hflip+vflip 0.4169 (score 0.75 / min_area 50).
+  0.4169 < 0.4193 -> NO sub_v4; v3 (R50 v1 seed 42 + flip TTA) stays final.
+  Ensembles with v2 (val, tools/eval_ensemble.py): v1+v2 x 3 views = 0.4202 (fuse 0.5) / 0.4171 (fuse 0.6); v1+seed7+v2 = 0.4136.
+  v1 alone at fuse_iou 0.6 = 0.4207. All within noise of 0.4193 -> v2 and ensembles DROPPED. Only open item: merge-touching pp (0.4234 on v1).
+- STAGE-2 CROP REFINER (2026-11-12, idea from public notebook "LB 0.70 Topology-Safe Solar Filaments" by Fususu /
+  Nomannic19's Mask R-CNN + U-Net refiner; our own code + weights, their checkpoints NOT used): src/refiner.py,
+  configs/refiner.yaml, run runs/refiner_r18_20261112_205302 (ResNet18 U-Net, 256 px crops, context 1.8, 24 epochs,
+  batch 16 = 2 GB / 3 min per epoch; batch 32 spills GPU memory -> 25x slower). GT-centred val IoU 0.697.
+  Val PQ (tools/eval_refiner.py, v1 seed-42 3-view cache): baseline 0.4193 -> paint 0.4424 / merge 0.4467 / group 0.4456.
+  Chosen: score 0.8, mask 0.5, refine thr 0.4, flip-4 refiner TTA, merge touching refined masks (TP 727 FP 368 FN 411).
+  Weights weights/refiner_r18_filament.pt; config configs/refined_tta.yaml; predict.py --refiner <pt>.
+  Submission submissions/sub_v4_ep24_tta_refined.csv: LB 0.38 (v3 0.37). Notebook re-executed 2026-11-12, reproduces v4
+  byte for byte (official PQ 0.4467, pairwise IoU 0.594 / Dice 0.725, torchmetrics Dice 0.6771). README updated.
+  TODO: report.tex (still describes v3; regenerate figures from notebook outputs), commit + push (user has not approved yet).
+- Tried on top of v4, NO gain (val): refiner-agreement rescue/veto of detections (0.440); v2 detector + refiner 0.4409;
+  v1+v2 + refiner 0.4460; v1+seed7+v2 + refiner 0.4411. tools/eval_refiner.py takes several --cache (ensemble).
+- Public-repo research 2026-11-12: honest solutions reach LB 0.35-0.41 (Solid-Snake-99 0.41, biconcavelens 0.39-0.40);
+  LB scores > ~0.5 are reported to come from leaked test labels (77% of test images are in public MAGFiLO) or a Dice-era
+  metric. NEVER train on public MAGFiLO / test-overlap labels.
+- cls x3 detector run started 2026-11-12 23:31 via WMI: configs/cls3.yaml (baseline + train.loss_weights
+  {loss_classifier: 3.0}), run dir runs/maskrcnn_r50_cls3_*, logs train_cls3_stdout.log / train_cls3_stderr.log, ~4 h.
+  After: tools/eval_tta.py --config configs/cls3.yaml --weights <run>/best.pt --cache runs/tta_val_cache_cls3.pkl
+  --combos none,hflip,vflip ; then tools/eval_refiner.py --cache runs/tta_val_cache_cls3.pkl --refiner weights/refiner_r18_filament.pt.
+  Adopt only if val PQ > 0.4467.
+  Run dir runs/maskrcnn_r50_cls3_20261112_233119. KILLED by a system shutdown 2026-11-13 01:14 during epoch 6 (val ep 4
+  default-pp PQ 0.3406); resumed from ckpt.pt (after epoch 5) on 2026-11-13 06:38 via WMI, ~0.8 s/it, 19 epochs left (~3-4 h).
+  Resume: `.venv\Scripts\python -m src.train --config configs/cls3.yaml --resume runs/maskrcnn_r50_cls3_20261112_233119`
+  SLOWDOWN GOTCHA: after each validation pass the training process grew to ~3.75 GB dedicated + 0.85 GB shared GPU memory
+  (allocated only 2.6 GB) -> spill into shared memory -> ~3 s/it instead of ~0.6 (epochs 5, 9-12). No other app involved.
+  Fix 2026-11-13 10:16: train.gpu_mem_fraction: 0.8 (src/train.py, set in configs/cls3.yaml) + restart from ckpt after epoch 12;
+  log now prints `rsv` (reserved). If rsv/speed degrades again after a val pass, kill + resume at an epoch boundary.
+  Val default-pp: ep 4 0.3406, ep 8 0.3360, ep 12 0.3614 (best.pt), ep 16 0.3449.
+  KILLED again by a reboot 2026-11-13 11:15 during epoch 18; resumed from ckpt.pt (after epoch 17) at 15:44 via WMI
+  (7 epochs left, ~1-1.5 h). gpu_mem_fraction 0.8 held after the ep-16 val pass (rsv 2.00G, ~0.56 s/it).
+  cls3 run FINISHED 2026-11-13 16:59: best.pt = epoch 24, default-pp PQ 0.3623 (ep 20 0.3603), tuned 0.4040 (score 0.9).
+  Flip TTA (runs/tta_val_cache_cls3.pkl): 0.4174 (score 0.85) < v1 0.4193. With refiner: paint 0.4382 / merge 0.4414 /
+  group 0.4430, all < 0.4467 -> cls3 DROPPED; v4 (v1 seed 42 + flip TTA + refiner, merge) stays final.
+  Report update for v4 was deferred by user (2026-11-13) until this run was done -> now due.
+- ZOOM VIEW (2026-11-13, tools/eval_zoom.py, cache runs/tta_val_cache_zoom.pkl): 1024 tiles stride 512 upscaled 2x, NMS,
+  combined with the 3-view cache. Val PQ (no refiner): base 0.4193; zoom alone 0.3035; fused as 4th view 0.4036;
+  union 0.3856 (alpha 1) / 0.4155 (alpha 0.9). 47 dets/img vs 22, extra ones are confident FPs -> DROPPED.
+- FULL-DATA RETRAIN (user approved 2026-11-13; user goal: raise public LB, by valid means only): data.train_on_all: true
+  (src/train.py, src/refiner.py) trains on train + val (1154 samples / 707 images). configs/full.yaml (= baseline + that,
+  eval_every 24, gpu_mem_fraction 0.8) started 2026-11-13 19:05 via WMI, logs train_full_stdout.log / train_full_stderr.log,
+  run dir runs/maskrcnn_r50_full_*, ~4.5 h. Val numbers of this run are NOT valid (val is in training); use last.pt.
+  Then: `python -m src.refiner --config configs/refiner_full.yaml` (~1.5 h, use last.pt), then predict test with
+  configs/refined_tta.yaml + frozen v4 thresholds (score 0.8 / mask 0.5 / refine 0.4 / merge) -> sub_v5_full.csv.
+  Resume: `.venv\Scripts\python -m src.train --config configs/full.yaml --resume runs/maskrcnn_r50_full_<stamp>`
+  First attempt (runs/maskrcnn_r50_full_20261113_190514) DIED 2026-11-13 19:28 in epoch 1 (unclean reboot, Kernel-Power 41),
+  no checkpoint. RESTARTED from scratch 2026-11-14 22:35 via WMI: runs/maskrcnn_r50_full_20261114_223544 (~4.5 h, done ~03:00).
+  Resume: `.venv\Scripts\python -m src.train --config configs/full.yaml --resume runs/maskrcnn_r50_full_20261114_223544`
+  Full detector FINISHED 2026-11-15 03:38 (24 epochs; use last.pt). Its val numbers (default 0.3828 / tuned 0.4226) are NOT valid.
+  Full refiner started 2026-11-15 07:58 via WMI: runs/refiner_r18_full_20261115_075831, logs train_refiner_full_stdout.log /
+  train_refiner_full_stderr.log (~1.5 h; use last.pt). Next: predict test -> submissions/sub_v5_full.csv with frozen v4 thresholds.
+  That refiner run DIED 2026-11-15 ~09:07 in epoch 17 (unclean reboot, Kernel-Power 41). src/refiner.py has no resume and
+  uses OneCycleLR, so its last.pt (epoch 16) is mid-schedule -> do NOT use. RESTARTED from scratch 2026-11-15 20:04 via WMI:
+  runs/refiner_r18_full_20261115_200448 (same logs, appended; ~1.5 h, done ~21:30). Use its last.pt after "ep 24/24".
+  Full refiner FINISHED 2026-11-15 21:27 (24 epochs). submissions/sub_v5_full.csv written 23:06 (full detector last.pt +
+  full refiner last.pt, configs/refined_tta.yaml, frozen v4 thresholds): 1201 rows, 178/180 images, verified (ids, RLE 2048^2,
+  no empty masks). NOT yet uploaded to Kaggle (user uploads). v5 has no valid val score; weights not in weights/, notebook
+  reproduces v4. Remaining: upload v5 + choose final 2 picks, commit + push (awaiting user approval), report PDF, Google form.
+  sub_v5_full.csv uploaded by user 2026-11-16: public LB 0.39 (v4 0.38) -> best so far. Kaggle clock showed ~10 h left at
+  07:30 IST 2026-11-16 (deadline ~17:30 IST, later than the 10:30 IST assumed above).
 - (history) Seed-7 run was paused by user 2026-11-11 11:11 after epoch 12 (ckpt.pt saved; epoch 13 partial lost). Resume with:
   `.venv\Scripts\python -m src.train --config configs/seed7.yaml --resume runs/maskrcnn_r50_seed7_20261111_073534`
   (launch via WMI Invoke-CimMethod as above). ~12 epochs left = ~1.8 h with the GPU free.
