@@ -1,22 +1,67 @@
-# Solar Filament Segmentation Challenge 2026
+# Solar Filament Segmentation (Kaggle 2026)
 
-Instance segmentation of solar filaments in GONG H-alpha full-disk images
-([Kaggle competition](https://www.kaggle.com/competitions/filament-segmentation-2026/), NSF NSO).
-One mask per filament, scored by Panoptic Quality (PQ).
+![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
+![PyTorch](https://img.shields.io/badge/PyTorch-torchvision-EE4C2C?logo=pytorch&logoColor=white)
+![Task](https://img.shields.io/badge/task-instance%20segmentation-6f42c1)
+![Metric](https://img.shields.io/badge/val%20PQ-0.447-brightgreen)
+![License](https://img.shields.io/badge/code-MIT-blue)
 
-**Method:** two stages. (1) A class-agnostic Mask R-CNN (ResNet50-FPN, COCO-pretrained, torchvision),
-fine-tuned on full-resolution 1024x1024 crops and run on the native 2048x2048 image with flip TTA,
-followed by greedy score-ordered overlap removal with thresholds tuned on a held-out validation
-split. (2) A small U-Net (ResNet18 encoder) that re-segments every detected filament on a
-native-resolution crop; refined masks that touch are merged.
+Instance segmentation of **solar filaments** (dense, cool plasma suspended above the Sun's surface)
+in 2048x2048 GONG H-alpha full-disk images, for the
+[Solar Filament Segmentation Challenge 2026](https://www.kaggle.com/competitions/filament-segmentation-2026/)
+(NSF National Solar Observatory). Every filament gets its own mask; the score is Panoptic Quality (PQ).
+
+![Ground truth vs prediction on a validation image](reports/figures/val_zoom.png)
+<sub>Validation crop (768 px). Left: annotator masks. Right: this pipeline. Each colour is one filament instance.</sub>
+
+## Highlights
+
+* **Two-stage pipeline:** class-agnostic Mask R-CNN (ResNet50-FPN) finds filaments on the native
+  2048 px image, then a ResNet18 U-Net re-segments each one on a full-resolution crop.
+  The refiner adds **+0.027 PQ** (0.419 -> 0.447) because Mask R-CNN's 28x28 mask head is too coarse for thin filaments.
+* **Beats the inter-annotator ceiling:** two human annotators agree with each other at PQ ~0.34 on
+  the same images; the model reaches 0.447 against held-out labels.
+* **Runs on a 4 GB laptop GPU** (GTX 1650): native-resolution 1024 px crop training in fp32, about 1 s per image at inference.
+* **Disciplined validation:** a fixed train/val split grouped by image timestamp (no leakage across annotators of the same image),
+  all thresholds tuned on validation only, never on the leaderboard. Our PQ code matches the organisers' scorer exactly.
+* **Fully reproducible:** committed weights, YAML configs, fixed seeds, and one notebook that regenerates the submission byte for byte.
+
+## Results
 
 | | Validation PQ | Public LB |
 |---|---|---|
 | Epoch 4 checkpoint | 0.375 | 0.33 |
 | Epoch 24 | 0.414 | 0.36 |
 | Epoch 24 + 3-view flip TTA | 0.419 | 0.37 |
-| **Final: + crop refiner (stage 2)** | **0.447** | **0.38** |
+| **+ crop refiner (stage 2), weights in this repo** | **0.447** | **0.38** |
+| Same pipeline retrained on train + val | n/a | 0.39 |
 | Inter-annotator agreement (reference) | ~0.34 | – |
+
+<p align="center"><img src="reports/figures/val_pq_curve.png" width="420" alt="Validation PQ by epoch"></p>
+
+### Things that did not help (validation PQ, baseline 0.4193 / 0.4467 with refiner)
+
+| Idea | Result |
+|---|---|
+| Rotation TTA (4 or 8 dihedral views) | 0.415-0.418, worse than flips only |
+| Seed ensemble (2 detectors) | 0.419, no gain |
+| Mask R-CNN v2 + smaller anchors | 0.417 |
+| Classifier loss x3 (fewer confident false positives) | 0.443 with refiner |
+| 2x zoomed tile inference for small filaments | 0.404, adds confident false positives |
+| 1 px mask dilation | 0.392 |
+
+Error analysis on validation: most misses are small filaments (recall 28% for 200-500 px objects);
+most false positives are large and confident, which points at label noise as much as model error.
+
+```mermaid
+flowchart LR
+    A[H-alpha image<br/>2048x2048 grayscale] --> B[Mask R-CNN R50-FPN<br/>+ flip TTA]
+    B --> C[Score-ordered<br/>overlap removal]
+    C --> D[Crop each filament<br/>1.8x box, 256 px]
+    D --> E[ResNet18 U-Net<br/>refiner, 4 flips]
+    E --> F[Merge touching masks]
+    F --> G[RLE submission CSV]
+```
 
 ## Quick start (reproduce the submission without retraining)
 
@@ -119,4 +164,5 @@ checkpoints from those notebooks are used.
 
 ## License / data
 
-Competition data are used for non-commercial research purposes under the competition rules.
+Code is released under the MIT License (see `LICENSE`). Competition data are not included and are
+used for non-commercial research purposes under the competition rules.
