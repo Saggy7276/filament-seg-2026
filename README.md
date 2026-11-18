@@ -166,3 +166,7 @@ checkpoints from those notebooks are used.
 
 Code is released under the MIT License (see `LICENSE`). Competition data are not included and are
 used for non-commercial research purposes under the competition rules.
+
+## Author
+
+**Sagar Mahadik** ([@Saggy7276](https://github.com/Saggy7276)): solo entry, Solar Filament Segmentation Challenge 2026.
